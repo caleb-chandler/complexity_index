@@ -79,7 +79,7 @@ def compute_depth(
                 if d < depth.get(z, float('inf')):  # keep the easiest recipe
                     depth[z] = d
                     changed = True
-    return depth
+    return pd.DataFrame([depth])
 
 
 def compute_assembly(
@@ -136,4 +136,11 @@ def compute_assembly(
                 idx_dict[t] = curr_best
                 changed = True
 
-    return idx_dict
+    '''
+    TODO:
+    - add col names
+
+    group method = "joint assembly" (maybe)
+    '''
+
+    return pd.DataFrame([idx_dict])
