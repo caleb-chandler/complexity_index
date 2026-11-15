@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import networkx as nx
+import warnings
 
 
 def compute_complexity(
@@ -56,7 +57,6 @@ def compute_complexity(
 
 def compute_depth(
         path,
-        basics,
         groups=None  # TODO
 ):
     ''' 
@@ -64,8 +64,11 @@ def compute_depth(
 
     depth is the maximal pathway of the minimal recipe
     '''
-    r = pd.read_csv(path)  # result,input_1,input_2
-    depth = {b: 0 for b in basics}
+    r = pd.read_csv(path)
+    r.columns = ['result', 'input_1', 'input_2']
+    # basals are the inputs which are never outputs
+    basals = list((set(r['input_1']) | set(r['input_2'])) - set(r['result']))
+    depth = {b: 0 for b in basals}
     changed = True
     while changed:
         changed = False
@@ -87,10 +90,65 @@ def compute_assembly(
     takes assembly_edgelist
 
     assembly index is the sum of joins required for each proximate input
-    --------------
-    what we want to do is make our way up the tree assigning each score as we go from the scores
-    assigned previously
     '''
-    tree = nx.read_edgelist(path, delimiter=',', create_using=nx.MultiDiGraph)
+    tree_df = pd.read_csv(path, header=None, names=[
+                          'input', 'output', 'partner'])
+    tree = nx.from_pandas_edgelist(tree_df, 'input', 'output', 'partner',
+                                   create_using=nx.MultiDiGraph)
 
-    basics =
+    # iteratively assign scores to every node whose inputs were defined in
+    # previous step. score = (input 1 score + input 2 score + 1)
+
+    basals = set(t for t, i in tree.in_degree() if i == 0)
+
+    idx_dict = {}
+    idx_dict.update({b: 0 for b in basals})
+
+    # break each predecessor set into a list of tuples
+    # for each in-edge, collect (input, partner)
+    techs = set(tree.nodes())
+    combo_dict = {}
+    for t in techs:
+        in_edges = tree.in_edges(t, data=True)
+        # take only the value from data dict
+        in_edges = ((i, o, str(d.values())) for i, o, d in in_edges)
+        joins = set()
+        joins.update((i, p) for i, o, p in in_edges)
+        # remove redundant duplicates
+        joins = {tuple(sorted(j)) for j in joins}
+        combo_dict[t] = joins
+
+    '''
+    take in-edges, break them into specific pairs, and use the pair(s) with
+    the lowest resulting score
+
+    maybe you can first break them down into a list of tuples and if any of those
+    tuples is filled you take the resulting score
+    '''
+    def score(inputs): return sum(idx_dict[i] for i in inputs) + 1
+
+    assigned = set()
+    assigned.update(basals)
+    while True:
+        unassigned = techs - assigned
+        if not unassigned:
+            break
+        # if any of the combos in combo_dict[t] are both assigned,
+        # pick up that combo and idx_dict[t] = score(combo)
+        for t in unassigned:
+            curr_best = False
+            for i, p in combo_dict[t]:
+                if i in idx_dict and p in idx_dict:
+                    prelim = score((i, p))
+                    if curr_best:
+                        if prelim < curr_best:
+                            curr_best = prelim
+                    else:
+                        curr_best = prelim
+                    del prelim
+            if curr_best:
+                # update scores and assigned
+                idx_dict[t] = curr_best
+                assigned.add(t)
+
+    return idx_dict
