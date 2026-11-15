@@ -90,14 +90,14 @@ def compute_assembly(
     takes assembly_edgelist
 
     assembly index is the sum of joins required for each proximate input
+
+    iteratively assigns scores to every node whose inputs were defined in
+    previous step. score = (input 1 score + input 2 score + 1)
     '''
     tree_df = pd.read_csv(path, header=None, names=[
                           'input', 'output', 'partner'])
     tree = nx.from_pandas_edgelist(tree_df, 'input', 'output', 'partner',
                                    create_using=nx.MultiDiGraph)
-
-    # iteratively assign scores to every node whose inputs were defined in
-    # previous step. score = (input 1 score + input 2 score + 1)
 
     basals = set(t for t, i in tree.in_degree() if i == 0)
 
@@ -111,44 +111,29 @@ def compute_assembly(
     for t in techs:
         in_edges = tree.in_edges(t, data=True)
         # take only the value from data dict
-        in_edges = ((i, o, str(d.values())) for i, o, d in in_edges)
+        in_edges = ((i, o, d['partner']) for i, o, d in in_edges)
         joins = set()
         joins.update((i, p) for i, o, p in in_edges)
         # remove redundant duplicates
         joins = {tuple(sorted(j)) for j in joins}
         combo_dict[t] = joins
 
-    '''
-    take in-edges, break them into specific pairs, and use the pair(s) with
-    the lowest resulting score
-
-    maybe you can first break them down into a list of tuples and if any of those
-    tuples is filled you take the resulting score
-    '''
     def score(inputs): return sum(idx_dict[i] for i in inputs) + 1
 
-    assigned = set()
-    assigned.update(basals)
-    while True:
-        unassigned = techs - assigned
-        if not unassigned:
-            break
-        # if any of the combos in combo_dict[t] are both assigned,
-        # pick up that combo and idx_dict[t] = score(combo)
-        for t in unassigned:
-            curr_best = False
-            for i, p in combo_dict[t]:
-                if i in idx_dict and p in idx_dict:
-                    prelim = score((i, p))
-                    if curr_best:
-                        if prelim < curr_best:
-                            curr_best = prelim
-                    else:
+    changed = True
+    while changed:
+        changed = False
+        for t in techs - basals:
+            # start from t's current score (None if it has none yet)
+            curr_best = idx_dict.get(t)
+            for combo in combo_dict[t]:
+                if all(x in idx_dict for x in combo):
+                    prelim = score(combo)
+                    if curr_best is None or prelim < curr_best:
                         curr_best = prelim
-                    del prelim
-            if curr_best:
-                # update scores and assigned
+            # record it if t got its first score or a lower one
+            if curr_best is not None and curr_best != idx_dict.get(t):
                 idx_dict[t] = curr_best
-                assigned.add(t)
+                changed = True
 
     return idx_dict
