@@ -23,15 +23,26 @@ Columns:
   dept        BM department
   objectType  "Object type", e.g. "adze; blade"
   dateMade    "Production date" text, e.g. "19thC(early)-19thC(mid) (before 1873)"
-  placeName   first "Production place" entry whose prefix names production (Made / Minted /
-              Published / Printed / Photographed / Painted in, Original from, ...), else
-              "Associated with" / "Claimed to be from", else "Find spot" (Excavated/Findspot,
-              then Found/Acquired). "Made for", "Retailed in" and "Emblem of" are never used.
-  placeLabel  the prefix placeName came from, so origin and find spot can be told apart
+  productionPlace  "Production place" as exported, every entry with its prefix, e.g.
+              "Made in: Egypt (?); Made in: Cyprus (?)"
+  findSpot    "Find spot" as exported, e.g. "Excavated/Findspot: Tell Taya"
+  productionCountry  countries of the production entries whose prefix names production (Made /
+              Minted / Published / Printed / Photographed / Painted in, Original from, ...), or if
+              there are none, of "Associated with" / "Claimed to be from" entries. "Made for",
+              "Retailed in" and "Emblem of" are never used. Several are joined with "; ".
+  findSpotCountry    countries of the find spot entries
+  productionState    historic states the production entries name (all of them except "Made
+              for" / "Retailed in" / "Emblem of"), e.g. "Gaul; Roman Empire" for "Minted in: Gaul
+              (historic); Associated with: Roman Empire". Only states the record itself names:
+              see bm_places.PlaceIndex.states.
+  findSpotState      historic states the find spot entries name
   material    "Materials", e.g. "paper; silk"
   technique   "Technique", e.g. "etching; hand-coloured"
+Countries come from the BM place thesaurus via bm_places.PlaceIndex (see there for how names are
+matched). They are the thesaurus's country labels ("England", "USA", "Burma"), and are empty for
+historic polities and wider regions (Roman Empire, Gaul, Levant, Borneo).
 
-Usage: python reduce_british_museum.py path/to/bm-search.tgz
+Usage: python reduce_british_museum.py path/to/bm-search.tgz path/to/bmPlacesThesaurus.csv
 Output: data/real/museums/bm.csv
 """
 import re
@@ -42,10 +53,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from bm_places import PlaceIndex
 from technology_filter import is_technology
 
 OUT = Path(__file__).resolve().parents[2] / "data" / "real" / "museums" / "bm.csv"
-COLUMNS = ["id", "dept", "objectType", "dateMade", "placeName", "placeLabel", "material", "technique"]
+COLUMNS = ["id", "dept", "objectType", "dateMade", "productionPlace", "findSpot",
+           "productionCountry", "findSpotCountry", "productionState", "findSpotState",
+           "material", "technique"]
+AUTHORITY = {"associated with", "issued by"}  # these production entries name issuing authorities
 READ = ["Museum number", "Dept", "Object type", "Description", "Production date",
         "Production place", "Find spot", "Materials", "Technique"]
 
@@ -55,7 +70,6 @@ ENTRY = re.compile(r";\s*(?=[A-Z][^:;]{0,40}:)")
 PREFIX = re.compile(r"^([^:]{1,40}):\s*(.*)$", re.S)
 PLACE_SKIP = {"made for", "retailed in", "emblem of"}
 PLACE_VAGUE = {"associated with", "claimed to be from", ""}
-FIND_ORDER = {"excavated/findspot": 3, "found/acquired": 4}
 
 
 def entries(text):
@@ -69,29 +83,41 @@ def entries(text):
     return [(label, value) for label, value in out if value]
 
 
-def best_place(production, find_spot, labels):
-    best = None
+def production_countries(production, places, labels):
+    '''countries of the production entries (vague ones only if there are no others)'''
+    tiers = ([], [])
     for label, value in entries(production):
-        low = label.lower()
         labels[("Production place", label)] += 1
-        if low in PLACE_SKIP:
-            continue
-        tier = 1 if low in PLACE_VAGUE else 0
-        if best is None or tier < best[0]:
-            best = (tier, value, label)
+        if label.lower() not in PLACE_SKIP:
+            tiers[label.lower() in PLACE_VAGUE].append(value)
+    values = tiers[0] or tiers[1]
+    return "; ".join(dict.fromkeys(c for v in values for c in places.countries(v)))
+
+
+def production_states(production, places):
+    return "; ".join(dict.fromkeys(
+        s for label, value in entries(production) if label.lower() not in PLACE_SKIP
+        for s in places.states(value, authority=label.lower() in AUTHORITY)))
+
+
+def find_states(find_spot, places):
+    return "; ".join(dict.fromkeys(s for _, value in entries(find_spot) for s in places.states(value)))
+
+
+def find_countries(find_spot, places, labels):
+    values = []
     for label, value in entries(find_spot):
         labels[("Find spot", label)] += 1
-        tier = FIND_ORDER.get(label.lower(), 5)
-        if best is None or tier < best[0]:
-            best = (tier, value, label)
-    return (best[1], best[2]) if best else ("", "")
+        values.append(value)
+    return "; ".join(dict.fromkeys(c for v in values for c in places.countries(v)))
 
 
 def clean(s):
     return " ".join(s.split()) if isinstance(s, str) else ""
 
 
-def main(tgz):
+def main(tgz, thesaurus):
+    places = PlaceIndex(thesaurus)
     seen, labels, n_in, n_out, not_tech = set(), Counter(), 0, 0, Counter()
     OUT.parent.mkdir(parents=True, exist_ok=True)
     part = OUT.with_name(OUT.name + ".part")
@@ -110,14 +136,17 @@ def main(tgz):
                 new = ~key.duplicated() & ~pd.Series([k in seen for k in key], index=key.index)
                 seen.update(key[new].tolist())
                 chunk = chunk[new]
-                place = [best_place(p, s, labels) for p, s in zip(chunk["Production place"], chunk["Find spot"])]
                 out = pd.DataFrame({
                     "id": chunk["Museum number"].fillna("").str.replace(r"^No:\s*", "", regex=True),
                     "dept": chunk["Dept"].map(clean),
                     "objectType": chunk["Object type"].map(clean),
                     "dateMade": chunk["Production date"].map(clean),
-                    "placeName": [clean(p[0]) for p in place],
-                    "placeLabel": [p[1] for p in place],
+                    "productionPlace": chunk["Production place"].map(clean),
+                    "findSpot": chunk["Find spot"].map(clean),
+                    "productionCountry": [production_countries(p, places, labels) for p in chunk["Production place"]],
+                    "findSpotCountry": [find_countries(s, places, labels) for s in chunk["Find spot"]],
+                    "productionState": [production_states(p, places) for p in chunk["Production place"]],
+                    "findSpotState": [find_states(s, places) for s in chunk["Find spot"]],
                     "material": chunk["Materials"].map(clean),
                     "technique": chunk["Technique"].map(clean),
                 })
@@ -140,4 +169,4 @@ def main(tgz):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[2])
