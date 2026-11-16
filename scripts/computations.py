@@ -65,17 +65,18 @@ def compute_depth(
     depth is the maximal pathway of the minimal recipe
     '''
     r = pd.read_csv(path)
-    r.columns = ['result', 'input_1', 'input_2']
+    inputs = r.columns[1:]
     # basals are the inputs which are never outputs
-    basals = list((set(r['input_1']) | set(r['input_2'])) - set(r['result']))
+    basals = list(set(r[inputs].stack().dropna()) - set(r['result']))
     depth = {b: 0 for b in basals}
     changed = True
     while changed:
         changed = False
-        for z, a, b in zip(r.result, r.input_1, r.input_2):
-            if a in depth and b in depth:
-                # wait for the deeper ingredient
-                d = 1 + max(depth[a], depth[b])
+        for z, row in zip(r.result, r[inputs].itertuples(index=False)):
+            ins = [x for x in row if pd.notna(x)]  # skip blank input columns
+            if all(x in depth for x in ins):
+                # wait for the deepest ingredient
+                d = 1 + max(depth[x] for x in ins)
                 if d < depth.get(z, float('inf')):  # keep the easiest recipe
                     depth[z] = d
                     changed = True
@@ -92,7 +93,7 @@ def compute_assembly(
     assembly index is the sum of joins required for each proximate input
 
     iteratively assigns scores to every node whose inputs were defined in
-    previous step. score = (input 1 score + input 2 score + 1)
+    previous step. score = sum input scores + 1
     '''
     tree_df = pd.read_csv(path, header=None, names=[
                           'input', 'output', 'partner'])
@@ -105,7 +106,7 @@ def compute_assembly(
     idx_dict.update({b: 0 for b in basals})
 
     # break each predecessor set into a list of tuples
-    # for each in-edge, collect (input, partner)
+    # for each in-edge, collect (input, *partners)
     techs = set(tree.nodes())
     combo_dict = {}
     for t in techs:
@@ -113,7 +114,7 @@ def compute_assembly(
         # take only the value from data dict
         in_edges = ((i, o, d['partner']) for i, o, d in in_edges)
         joins = set()
-        joins.update((i, p) for i, o, p in in_edges)
+        joins.update((i, *p.split('+')) for i, o, p in in_edges)
         # remove redundant duplicates
         joins = {tuple(sorted(j)) for j in joins}
         combo_dict[t] = joins
