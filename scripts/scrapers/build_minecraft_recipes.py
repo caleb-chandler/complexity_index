@@ -4,7 +4,9 @@ Mojang's own recipe files for Minecraft Java 26.1.
 
 Source: data/toy/minecraft/mcmeta_26.1/ (see SOURCE.txt): recipe/*.json and tags/item/**/*.json
 from github.com/misode/mcmeta, tag 26.1-data. Brewing isn't in these files (the game hard-codes
-it), so potions and anything made from them are not in the network. The previous source (the
+it), so potions and anything made from them are not in the network. Which blocks need a tool to
+drop anything is also hard-coded, so that comes from data/toy/minecraft/minecraft-data_26.1/
+(blocks.json harvestTools and drops, from PrismarineJS/minecraft-data). The previous source (the
 Minecraft 1.6.1 workbook) and its outputs are in data/toy/minecraft/old_1.6.1/.
 
 Steps
@@ -29,19 +31,32 @@ Steps
   3. Expand slots into concrete recipes: slots with the same set of alternatives take the same
      item (4 Oak Planks -> Crafting Table, 4 Spruce Planks -> Crafting Table, ...), and
      different sets combine independently.
-  4. Depth over every recipe, one-slot crafts included: raw items are 0, and
-     depth = 1 + min over recipes of max(depth of inputs). Raw = gathered in the world: never
-     produced, produced only by unpacking a storage block made from it (Block of Diamond ->
-     9 Diamond, Honey Block + Glass Bottles -> Honey Bottle), or produced only by copying itself
-     (smithing templates are found in chests).
-  5. Keep a recipe only if
+  4. Gathering with tools. A starting item that is gathered in the world (see raw_items: never
+     produced by a recipe, only unpacked from its own storage block, or only copied) gets a
+     recipe "where it comes from + tool", one per tool that works, the tool being one more
+     input like a station:
+       - mined from a block that drops nothing without the right tool (blocks.json harvestTools):
+         Diamond Ore (in world) + Iron Pickaxe -> Diamond, Stone (in world) + Wooden Pickaxe ->
+         Cobblestone, Snow Block (in world) + Wooden Shovel -> Snowball. String is left out:
+         spiders drop it, a sword or shears is only needed for cobwebs.
+       - made by using a tool on something (TOOL_USES): shears for leaves, vines, honeycomb and
+         carved pumpkins, an axe for stripped logs, a bucket for milk, a glass bottle for honey,
+         a brush for pottery sherds.
+     "(in world)" nodes are blocks or animals as found in the world, separate from the item.
+     Silk Touch drops (Ice, Diamond Ore as an item) are not modelled.
+  5. Depth over every recipe, one-slot crafts included: raw items are 0, and
+     depth = 1 + min over recipes of max(depth of inputs). Raw items are now the "(in world)"
+     sources and what is gathered without a tool (logs, sand, flowers, mob drops, ...).
+  6. Keep a recipe only if
        - it has at least two inputs, station included. Copies count, so 2 Planks -> Stick is
          kept, like a + a in Little Alchemy, and Raw Iron + Furnace -> Iron Ingot is kept.
          One-slot crafts with no station (log -> planks, flower -> dye, block -> 9 ingots)
          combine nothing, so they only shape the depth ordering, as decay did for OHOL.
        - its result is deeper than every input. This drops loops (ingot <-> block), recycling
-         (smelting tools into nuggets) and alternatives that use more advanced ingredients or
-         stations (blasting an ingot that a plain Furnace already makes).
+         (smelting tools into nuggets) and alternatives that use more advanced ingredients,
+         stations or tools (blasting an ingot that a plain Furnace already makes, mining
+         Cobblestone with an Iron Pickaxe).
+       - for a gathering recipe, its result is used by another kept recipe.
      Result counts (4 planks per log) are ignored, as in the other toy networks.
 
 Item names are the game IDs in title case (minecraft:iron_ingot -> Iron Ingot). They are unique,
@@ -58,9 +73,9 @@ Outputs (in data/toy/minecraft/)
                         Little Alchemy / OHOL format (a + a -> z gives the single edge a,z,a).
                         Load with
                         nx.read_edgelist(path, delimiter=',', create_using=nx.MultiDiGraph, data=[('partner', str)])
-  items.csv             item,game_depth,base,raw,station,n_recipes for every item in the network.
-                        base = no kept recipe (the starting items); raw = gathered in the world
-                        (step 4); station = one of the stations in step 2.
+  items.csv             item,game_depth,base,raw,station,tool,n_recipes for every item in the network.
+                        base = no kept recipe (the starting items); raw = step 5; station = one of
+                        the stations in step 2; tool = the tool in a kept gathering recipe (step 4).
 
 Usage
   python scripts/scrapers/build_minecraft_recipes.py
@@ -73,7 +88,9 @@ from pathlib import Path
 
 DIR = Path(__file__).resolve().parents[2] / "data" / "toy" / "minecraft"
 SRC = DIR / "mcmeta_26.1"
+HARVEST = DIR / "minecraft-data_26.1"
 SEP = "+"  # joins the partner list in assembly_edgelist.csv
+IN_WORLD = " (in world)"  # a block or animal as found in the world, not the item
 
 CRAFTING_TABLE = "minecraft:crafting_table"
 STATION_BY_TYPE = {
@@ -91,6 +108,16 @@ NO_NEW_ITEM = {"smithing_trim", "crafting_dye", "crafting_special_bannerduplicat
                "crafting_special_repairitem", "crafting_special_shielddecoration",
                "crafting_special_firework_star_fade"}
 NEEDS_BREWING = {"crafting_imbue"}
+
+AXES = [f"minecraft:{t}_axe" for t in ("wooden", "stone", "copper", "golden", "iron", "diamond", "netherite")]
+TOOL_FREE_ANYWAY = {"minecraft:string"}  # spiders drop it; a sword or shears is only needed for cobwebs
+TOOL_USES = {  # starting items made by using a tool on something rather than by a recipe: (source, tools)
+    "minecraft:honeycomb": ("minecraft:bee_nest" + IN_WORLD, ["minecraft:shears"]),
+    "minecraft:honey_bottle": ("minecraft:bee_nest" + IN_WORLD, ["minecraft:glass_bottle"]),
+    "minecraft:carved_pumpkin": ("minecraft:pumpkin", ["minecraft:shears"]),
+    "minecraft:milk_bucket": ("minecraft:cow" + IN_WORLD, ["minecraft:bucket"]),
+    "minecraft:vine": ("minecraft:vine" + IN_WORLD, ["minecraft:shears"]),
+}
 
 
 def name(item_id: str) -> str:
@@ -176,7 +203,8 @@ def raw_items(recipes):
     """Items gathered in the world: never produced, produced only by unpacking a storage block
     that is itself made from them (Block of Diamond -> 9 Diamond; Honey Block + Glass Bottles ->
     Honey Bottle), or produced only by copying themselves (smithing templates are found in
-    chests, then duplicated)."""
+    chests, then duplicated). Unpacking uses the block once; packing (9 Diamond -> Block of
+    Diamond) uses the item many times, which is how the two directions are told apart."""
     made_from = collections.defaultdict(set)
     makers = collections.defaultdict(list)
     for r, ings, _ in recipes:
@@ -184,10 +212,52 @@ def raw_items(recipes):
         makers[r].append(ings)
 
     def found(x, ings):
-        return x in ings or any(made_from[i] == {x} for i in ings)
+        return x in ings or any(ings.count(i) == 1 and made_from[i] == {x} for i in set(ings))
 
     ingredients = {i for _, ings, _ in recipes for i in ings}
     return {i for i in ingredients if all(found(i, ings) for ings in makers[i])}
+
+
+def harvest_rules(harvest_dir: Path) -> dict:
+    """item -> [(block, tools)] for blocks that drop the item only when broken with one of the tools"""
+    blocks = json.loads((harvest_dir / "blocks.json").read_text(encoding="utf-8"))
+    item = {i["id"]: "minecraft:" + i["name"]
+            for i in json.loads((harvest_dir / "items.json").read_text(encoding="utf-8"))}
+    rules = collections.defaultdict(list)
+    for b in blocks:
+        if b.get("harvestTools"):
+            tools = sorted(item[int(t)] for t in b["harvestTools"])
+            for d in b.get("drops", []):
+                rules[item[d]].append(("minecraft:" + b["name"], tools))
+    return rules
+
+
+def tool_use(x):
+    """(source, tools) for a starting item made by using a tool on something, else None"""
+    if x in TOOL_USES:
+        return TOOL_USES[x]
+    n = x.split(":", 1)[1]
+    if n.endswith("_leaves"):
+        return x + IN_WORLD, ["minecraft:shears"]
+    if n.endswith("_pottery_sherd"):
+        return "minecraft:suspicious_sand" + IN_WORLD, ["minecraft:brush"]
+    if n.startswith("stripped_"):
+        return "minecraft:" + n[len("stripped_"):], AXES
+    return None
+
+
+def gathering(raw, rules):
+    """(result, (source,), tool) for every gathered starting item that needs a tool, one per tool"""
+    out = []
+    for x in sorted(raw - TOOL_FREE_ANYWAY):
+        if x in rules:
+            sources = [(block + IN_WORLD, tools) for block, tools in rules[x]]
+        elif tool_use(x):
+            sources = [tool_use(x)]
+        else:
+            continue
+        out += [(x, (src,), tool) for src, tools in sources for tool in tools]
+    return out
 
 
 def depths(recipes, raw):
@@ -217,10 +287,13 @@ def main():
         recipes += [(r, ings, station) for r, ings in expand(result, slots)]
     recipes = list(dict.fromkeys(recipes))
 
-    raw = raw_items(recipes)  # before stations, which aren't part of the storage-block loops
-    with_station = list(dict.fromkeys(
-        (r, tuple(sorted(ings + (st,))) if st and st not in ings else ings)
-        for r, ings, st in recipes))
+    # stations and tools are left out of raw_items: they aren't part of the storage-block loops
+    gather = gathering(raw_items(recipes), harvest_rules(HARVEST))
+    recipes += gather
+    raw = raw_items(recipes)
+    add = lambda ings, st: tuple(sorted(ings + (st,))) if st and st not in ings else ings
+    with_station = list(dict.fromkeys((r, add(ings, st)) for r, ings, st in recipes))
+    gathered = {(r, add(ings, t)) for r, ings, t in gather}
     depth = depths(with_station, raw)
 
     kept, dropped = {}, collections.Counter()
@@ -235,6 +308,11 @@ def main():
             dropped["not forward in tech tree"] += 1
         else:
             kept[(r, ings)] = None
+    used = {i for _, ings in kept for i in ings}
+    for k in [k for k in kept if k in gathered and k[0] not in used]:
+        del kept[k]
+        dropped["gathered but not used"] += 1
+    tools = {name(t) for r, ings, t in gather if (r, add(ings, t)) in kept}
     kept = sorted((name(r), tuple(sorted(name(i) for i in ings))) for r, ings in kept)
 
     for r, ings in kept:
@@ -269,10 +347,10 @@ def main():
     station_names = {name(s) for s in STATIONS}
     with open(DIR / "items.csv", "w", encoding="utf-8", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["item", "game_depth", "base", "raw", "station", "n_recipes"])
+        w.writerow(["item", "game_depth", "base", "raw", "station", "tool", "n_recipes"])
         for n in sorted(nodes, key=lambda n: (depth[by_name[n]], n)):
             w.writerow([n, depth[by_name[n]], int(n_recipes[n] == 0), int(by_name[n] in raw),
-                        int(n in station_names), n_recipes[n]])
+                        int(n in station_names), int(n in tools), n_recipes[n]])
 
     print(f"recipe files skipped: {dict(skipped)}")
     print(f"{len(recipes)} concrete recipes after expanding tags; dropped: {dict(dropped)}")
@@ -280,6 +358,9 @@ def main():
           f"max {width} inputs) -> {len(edges)} edges, {n_assembly} assembly edges, {len(nodes)} items "
           f"({sum(n_recipes[n] == 0 for n in nodes)} starting items)")
     print("kept recipes per station:", {s: sum(s in i for _, i in kept) for s in sorted(station_names)})
+    print(f"{len(gather)} gathering recipes (one per tool); kept: "
+          f"{sum(any(i.endswith(IN_WORLD) for i in ings) or r.startswith('Stripped') for r, ings in kept)}; "
+          f"tools in kept gathering recipes: {sorted(tools)}")
 
 
 if __name__ == "__main__":

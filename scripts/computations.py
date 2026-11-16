@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import networkx as nx
-import warnings
+import math
 
 
 def compute_complexity(
@@ -41,7 +41,7 @@ def compute_complexity(
     # group scores if requested
     if groups:
         group_data = []
-        for group in groups:
+        for group in sorted(set(groups.values())):
             scores = idx_df[idx_df['Group'] == group]['Complexity']
             _max = np.max(scores)
             mean = np.mean(scores)
@@ -80,7 +80,24 @@ def compute_depth(
                 if d < depth.get(z, float('inf')):  # keep the easiest recipe
                     depth[z] = d
                     changed = True
-    return pd.DataFrame([depth])
+
+    depth_df = pd.DataFrame(list(depth.items()), columns=['Tech', 'Depth'])
+    depth_df['Group'] = depth_df['Tech'].map(groups) if groups else 'null'
+
+    if groups:
+        group_data = []
+        for group in sorted(set(groups.values())):
+            scores = depth_df[depth_df['Group'] == group].iloc[:, 1]
+            _max = np.max(scores)
+            mean = np.mean(scores)
+            median = np.median(scores)
+            group_data.append((group, _max, mean, median,
+                               scores.to_numpy().tolist()))
+        group_depth_df = pd.DataFrame(
+            group_data, columns=['Group Name', 'Max', 'Mean', 'Median', 'All Scores'])
+        return depth_df, group_depth_df
+
+    return depth_df
 
 
 def compute_assembly(
@@ -102,8 +119,8 @@ def compute_assembly(
 
     basals = set(t for t, i in tree.in_degree() if i == 0)
 
-    idx_dict = {}
-    idx_dict.update({b: 0 for b in basals})
+    # basals: nothing has to be built
+    path_dict = {b: frozenset() for b in basals}
 
     # break each predecessor set into a list of tuples
     # for each in-edge, collect (input, *partners)
@@ -119,29 +136,46 @@ def compute_assembly(
         joins = {tuple(sorted(j)) for j in joins}
         combo_dict[t] = joins
 
-    def score(inputs): return sum(idx_dict[i] for i in inputs) + 1
+    # everything built to make t from this combo: t itself plus each input's pathway, each item once
+    def build(t, combo): return frozenset(
+        [t]).union(*(path_dict[x] for x in combo))
 
     changed = True
     while changed:
         changed = False
         for t in techs - basals:
             # start from t's current score (None if it has none yet)
-            curr_best = idx_dict.get(t)
+            curr_best = path_dict.get(t)
             for combo in combo_dict[t]:
-                if all(x in idx_dict for x in combo):
-                    prelim = score(combo)
-                    if curr_best is None or prelim < curr_best:
+                if all(x in path_dict for x in combo):
+                    prelim = build(t, combo)
+                    if curr_best is None or len(prelim) < len(curr_best):
                         curr_best = prelim
             # record it if t got its first score or a lower one
-            if curr_best is not None and curr_best != idx_dict.get(t):
-                idx_dict[t] = curr_best
+            if curr_best is not None and curr_best != path_dict.get(t):
+                path_dict[t] = curr_best
                 changed = True
 
-    '''
-    TODO:
-    - add col names
+    idx_df = pd.DataFrame([(t, len(p)) for t, p in path_dict.items()], columns=[
+                          'Tech', 'Assembly'])
+    idx_df['Group'] = idx_df['Tech'].map(groups) if groups else 'null'
 
-    group method = "joint assembly" (maybe)
-    '''
+    if groups:
+        group_data = []
+        for group in sorted(set(groups.values())):
+            scores = idx_df[idx_df['Group'] == group].iloc[:, 1]
+            # joint assembly is the sum for each object of exp(score) * normalized copy number - 1
 
-    return pd.DataFrame([idx_dict])
+            joint_assembly = sum([
+                math.exp(a) * (n_copies-1/N_total) for a in scores
+            ])
+            _max = np.max(scores)
+            mean = np.mean(scores)
+            median = np.median(scores)
+            group_data.append((group, joint_assembly, _max, mean, median,
+                               scores.to_numpy().tolist()))
+        group_idx_df = pd.DataFrame(
+            group_data, columns=['Group Name', 'Max', 'Mean', 'Median', 'All Scores'])
+        return idx_df, group_idx_df
+
+    return idx_df
