@@ -4,16 +4,26 @@ import networkx as nx
 import math
 
 
+def compute_adj_poss(tech, tree):
+    ''' 
+    for now this is simply 1) out-degree and 2) out-degree divided by in-degree
+    '''
+    raw = tree.out_degree(tech)
+    norm = raw / tree.in_degree(tech) if tree.in_degree(tech) else np.nan
+    return raw, norm
+
+
 def compute_complexity(
         path,
         groups=None,
 ):
-    ''' 
+    '''
     takes merged-input file
 
-    complexity score is the sum of unique ancestors
+    complexity score is the sum of unique ancestors, with the lowest value taken for techs
+    with more than one recipe
 
-    outputs a complexity score for 1) each individual item and 2) each item within a subset. 
+    outputs a complexity score for 1) each individual item and 2) each item within a subset.
     output is a df with each node, its score, its specific ancestors, and its group if supplied
 
     "groups" must be a dict matching technologies to groups in the same tree you input
@@ -59,7 +69,7 @@ def compute_depth(
         path,
         groups=None  # TODO
 ):
-    ''' 
+    '''
     takes default recipes file
 
     depth is the maximal pathway of the minimal recipe
@@ -156,26 +166,28 @@ def compute_assembly(
                 path_dict[t] = curr_best
                 changed = True
 
-    idx_df = pd.DataFrame([(t, len(p)) for t, p in path_dict.items()], columns=[
-                          'Tech', 'Assembly'])
+    idx_df = pd.DataFrame([(t, len(p), *compute_adj_poss(t, tree)) for t, p in path_dict.items()],
+                          columns=['Tech', 'Assembly', 'AP', 'AP Norm'])
     idx_df['Group'] = idx_df['Tech'].map(groups) if groups else 'null'
 
     if groups:
         group_data = []
         for group in sorted(set(groups.values())):
             scores = idx_df[idx_df['Group'] == group].iloc[:, 1]
-            # joint assembly is the sum for each object of exp(score) * normalized copy number - 1
-
-            joint_assembly = sum([
-                math.exp(a) * (n_copies-1/N_total) for a in scores
-            ])
             _max = np.max(scores)
             mean = np.mean(scores)
             median = np.median(scores)
-            group_data.append((group, joint_assembly, _max, mean, median,
+            group_data.append((group, _max, mean, median,
                                scores.to_numpy().tolist()))
         group_idx_df = pd.DataFrame(
             group_data, columns=['Group Name', 'Max', 'Mean', 'Median', 'All Scores'])
         return idx_df, group_idx_df
 
     return idx_df
+
+
+def ensemble_assembly(ensemble, tree):
+    '''
+    TODO: this will be for use with the actual museum observations
+    '''
+    pass
