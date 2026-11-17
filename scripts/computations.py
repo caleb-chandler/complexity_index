@@ -43,7 +43,7 @@ def compute_complexity(
         if groups:
             g = groups[tech]
         else:
-            g = 'null'
+            g = np.nan
         data.append((tech, c, a, g))
     idx_df = pd.DataFrame(
         data, columns=['Tech', 'Complexity', 'Ancestors', 'Group'])
@@ -92,7 +92,7 @@ def compute_depth(
                     changed = True
 
     depth_df = pd.DataFrame(list(depth.items()), columns=['Tech', 'Depth'])
-    depth_df['Group'] = depth_df['Tech'].map(groups) if groups else 'null'
+    depth_df['Group'] = depth_df['Tech'].map(groups) if groups else np.nan
 
     if groups:
         group_data = []
@@ -167,8 +167,8 @@ def compute_assembly(
                 changed = True
 
     idx_df = pd.DataFrame([(t, len(p), *compute_adj_poss(t, tree)) for t, p in path_dict.items()],
-                          columns=['Tech', 'Assembly', 'AP', 'AP Norm'])
-    idx_df['Group'] = idx_df['Tech'].map(groups) if groups else 'null'
+                          columns=['Tech', 'Assembly Index', 'AP', 'AP Norm'])
+    idx_df['Group'] = idx_df['Tech'].map(groups) if groups else np.nan
 
     if groups:
         group_data = []
@@ -181,9 +181,9 @@ def compute_assembly(
                                scores.to_numpy().tolist()))
         group_idx_df = pd.DataFrame(
             group_data, columns=['Group Name', 'Max', 'Mean', 'Median', 'All Scores'])
-        return idx_df, group_idx_df
+        return idx_df, group_idx_df, tree
 
-    return idx_df
+    return idx_df, tree
 
 
 def ensemble_assembly(ensemble, tree):
